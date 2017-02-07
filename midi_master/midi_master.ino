@@ -1,3 +1,4 @@
+#include <EEPROM.h>
 #include <MIDI.h>
 #include "BED.h"
 #include "midi.h"
