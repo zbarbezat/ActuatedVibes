@@ -3,7 +3,7 @@
 const int PIN_BED_DIR = 14;     // Stepper direction
 const int PIN_BED_STEP = 15;    // Stepper control signal (step on falling edge)
 const int PIN_BED_MS3 = 16;     // Microstep resolution LSB
-const int PIN_BED_MS2 = 17;     // ...  
+const int PIN_BED_MS2 = 17;     // ...
 const int PIN_BED_MS1 = 18;     // Microstep resolution MSB
 const int PIN_BED_ENABLE = 19;  // Stepper driver enable
 const int PIN_HOME_SWITCH = 23; // Stepper home switch input
@@ -26,7 +26,9 @@ BED_bed_step_dir bed_step_dir;                // Current motor step direction
 
 const int bed_steps_per_rev = 200;        // Number of full steps per revolution (Wantai 57BYGH420-2)
 int bed_current_angle = 0;                // Current motor angle in sixteenths of a step
-const int bed_sustain_down_angle = 2200;  // Target motor angle (in sixteenths) for sustain bar down
+int bed_sustain_down_angle = 0;  // Target motor angle (in sixteenths) for sustain bar down
+int bed_sustain_up_angle = 0;
+int bed_sustain_diff_angle = 0;
 
 /* Set the BED step direction */
 void bed_set_dir(BED_bed_step_dir dir) {
@@ -107,7 +109,7 @@ void bed_step(int num_steps) {
 /* Step to the specified angle (in sixteenth steps) as quickly as possible (lowest resolution) */
 void bed_step_to_angle(int target_angle) {
 
-  /* Take modulus with number of sixteenth steps per revoluion 
+  /* Take modulus with number of sixteenth steps per revoluion
      so we don't make more than a full rotation */
   target_angle %= bed_steps_per_rev * 16;
 
@@ -117,7 +119,7 @@ void bed_step_to_angle(int target_angle) {
   num_sixteenths = abs(num_sixteenths);
 
   int num_full_steps = num_sixteenths / 16;
-  
+
 #ifdef BED_SERIAL_DEBUG
   Serial.print(" 1/1: ");
   Serial.println(num_full_steps);
@@ -135,7 +137,7 @@ void bed_step_to_angle(int target_angle) {
   Serial.print(" 1/2: ");
   Serial.println(num_half_steps);
 #endif
-  
+
   if (num_half_steps > 0) {
     bed_set_bed_step_res(kBED_bed_step_res_half);
     bed_step(num_half_steps);
@@ -144,11 +146,11 @@ void bed_step_to_angle(int target_angle) {
 
   int num_quarter_steps = num_sixteenths / 4;
 
-#ifdef BED_SERIAL_DEBUG  
+#ifdef BED_SERIAL_DEBUG
   Serial.print(" 1/4: ");
   Serial.println(num_quarter_steps);
 #endif
-  
+
   if (num_quarter_steps > 0) {
     bed_set_bed_step_res(kBED_bed_step_res_quarter);
     bed_step(num_quarter_steps);
@@ -157,11 +159,11 @@ void bed_step_to_angle(int target_angle) {
 
   int num_eighth_steps = num_sixteenths / 2;
 
-#ifdef BED_SERIAL_DEBUG  
+#ifdef BED_SERIAL_DEBUG
   Serial.print(" 1/8: ");
   Serial.println(num_eighth_steps);
 #endif
-  
+
   if (num_eighth_steps > 0) {
     bed_set_bed_step_res(kBED_bed_step_res_eighth);
     bed_step(num_eighth_steps);
@@ -172,7 +174,7 @@ void bed_step_to_angle(int target_angle) {
   Serial.print("1/16:");
   Serial.println(num_sixteenths);
 #endif
-  
+
   if (num_sixteenths > 0) {
     bed_set_bed_step_res(kBED_bed_step_res_sixteenth);
     bed_step(num_sixteenths);
@@ -191,6 +193,71 @@ void bed_find_home() {
   }
 }
 
+/* Initiates calibration process by stepping at lowest resolution until user input. */
+void bed_calib() {
+  int complete = 0;
+  Serial.begin(9600);
+  Serial.setTimeout(1000);
+  Serial.println("1 for calibration, 2 to load from EEPROM");
+  char rx_byte = 0;
+  while (complete == 0) {
+    if (Serial.available() > 0) { // is a character available?
+      rx_byte = Serial.read();    // get the character
+      if (rx_byte == '1') {
+        Serial.println("Enter any digit when motor reaches desired position");
+        int stopup = 0;
+        while (stopup == 0) {
+          if (Serial.available() > 0) {
+            bed_sustain_up_angle = bed_current_angle;
+            EEPROM.write(0, bed_sustain_up_angle);
+            Serial.println("Wrote top angle to EEPROM");
+            stopup = 1;
+          }
+          else {
+            bed_step(1);
+          }
+        }
+
+        delay(3000);
+        Serial.println("Now calibrating down angle, please enter 2 when motor reaches desired angle");
+        bed_set_dir(kBED_bed_step_dir_backward);
+        
+        int stopdown = 0;
+        while (stopdown == 0) {
+          int downinput = Serial.read();
+          if (downinput == '2') {
+            bed_sustain_down_angle = bed_current_angle;
+            EEPROM.write(1, bed_sustain_down_angle);
+            Serial.println("Wrote bottom angle to EEPROM");
+            stopdown = 1;
+            bed_set_dir(kBED_bed_step_dir_forward);
+            Serial.println("Please wait a few seconds before any note input");
+            bed_sustain_diff_angle = bed_sustain_up_angle - bed_sustain_down_angle;
+            complete = 1;
+          }
+          else {
+            bed_step(1);
+          }
+        }
+      }
+      else if (rx_byte == '2') {
+        bed_sustain_up_angle = EEPROM.read(0);
+        bed_sustain_down_angle = EEPROM.read(1);
+        Serial.print("Calibration angle ");
+        Serial.print(bed_sustain_up_angle);
+        Serial.print(" and ");
+        Serial.print(bed_sustain_down_angle);
+        Serial.println(" loaded from EEPROM");
+        bed_sustain_diff_angle = bed_sustain_up_angle - bed_sustain_down_angle;
+        complete = 1;
+      }
+      else {
+        Serial.println("not a valid option");
+      }
+    }
+  }
+}
+
 /* Set pin modes for BED (Big Easy Driver) control */
 void bed_setup() {
   pinMode(PIN_BED_DIR, OUTPUT);
@@ -203,6 +270,8 @@ void bed_setup() {
   digitalWrite(PIN_BED_ENABLE, HIGH);
   digitalWrite(PIN_BED_ENABLE, LOW);    // Enable the motor
   bed_find_home();
+  bed_calib();
   bed_set_dir(kBED_bed_step_dir_forward);
-  bed_set_bed_step_res(kBED_bed_step_res_eighth);
+  bed_set_bed_step_res(kBED_bed_step_res_sixteenth);
+  
 }
